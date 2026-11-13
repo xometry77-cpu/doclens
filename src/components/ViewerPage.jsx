@@ -49,7 +49,9 @@ const customViews = {
 
 
 export default function ViewerPage({
-  onBack,
+  
+  onLogout,
+onBack,
   showToast,
   pdfFile,
   analysisResult,
@@ -1278,6 +1280,17 @@ export default function ViewerPage({
             aria-label="Zoom in"
           >
             + Zoom
+          </button>
+
+
+          {/* DOCLENS_VIEWER_LOGOUT_V1 */}
+          <button
+            className="btn"
+            type="button"
+            onClick={onLogout}
+            aria-label="Log out of DocLens"
+          >
+            Logout
           </button>
 
 

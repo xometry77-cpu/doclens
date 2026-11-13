@@ -1,12 +1,15 @@
 import asyncio
+import hashlib
+import hmac
 import io
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from google import genai
@@ -63,6 +66,334 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+
+# ============================================================
+# DOCLENS_SERVER_AUTH_V1
+# ============================================================
+
+AUTH_COOKIE_NAME = "doclens_session"
+
+AUTH_MAX_AGE_SECONDS = (
+    60 * 60 * 24 * 7
+)
+
+PASSWORD_HASH_ITERATIONS = 200_000
+
+
+class DocLensLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+def _get_auth_config():
+    email = (
+        os.getenv(
+            "DOCLENS_LOGIN_EMAIL",
+            "",
+        )
+        .strip()
+        .lower()
+    )
+
+    password_hash = (
+        os.getenv(
+            "DOCLENS_LOGIN_PASSWORD_HASH",
+            "",
+        )
+        .strip()
+    )
+
+    session_secret = (
+        os.getenv(
+            "DOCLENS_SESSION_SECRET",
+            "",
+        )
+        .strip()
+    )
+
+    if (
+        not email
+        or not password_hash
+        or not session_secret
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "DocLens login is not configured."
+            ),
+        )
+
+    return (
+        email,
+        password_hash,
+        session_secret,
+    )
+
+
+def _verify_password(
+    password: str,
+    encoded_hash: str,
+):
+    try:
+        salt_hex, digest_hex = (
+            encoded_hash.split(
+                "$",
+                1,
+            )
+        )
+
+        salt = bytes.fromhex(
+            salt_hex
+        )
+
+        expected = bytes.fromhex(
+            digest_hex
+        )
+    except (
+        ValueError,
+        TypeError,
+    ):
+        return False
+
+    actual = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode(
+            "utf-8"
+        ),
+        salt,
+        PASSWORD_HASH_ITERATIONS,
+    )
+
+    return hmac.compare_digest(
+        actual,
+        expected,
+    )
+
+
+def _create_session_token(
+    email: str,
+    secret: str,
+):
+    timestamp = str(
+        int(
+            time.time()
+        )
+    )
+
+    payload = (
+        f"{email}:{timestamp}"
+    )
+
+    signature = hmac.new(
+        secret.encode(
+            "utf-8"
+        ),
+        payload.encode(
+            "utf-8"
+        ),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return (
+        f"{timestamp}.{signature}"
+    )
+
+
+def _session_is_valid(
+    token: str | None,
+):
+    if not token:
+        return False
+
+    try:
+        (
+            expected_email,
+            _,
+            session_secret,
+        ) = _get_auth_config()
+
+        (
+            timestamp_text,
+            signature,
+        ) = token.split(
+            ".",
+            1,
+        )
+
+        timestamp = int(
+            timestamp_text
+        )
+
+        now = int(
+            time.time()
+        )
+
+        age = (
+            now - timestamp
+        )
+
+        if (
+            age < 0
+            or
+            age >
+            AUTH_MAX_AGE_SECONDS
+        ):
+            return False
+
+        payload = (
+            f"{expected_email}:"
+            f"{timestamp}"
+        )
+
+        expected_signature = (
+            hmac.new(
+                session_secret.encode(
+                    "utf-8"
+                ),
+                payload.encode(
+                    "utf-8"
+                ),
+                hashlib.sha256,
+            )
+            .hexdigest()
+        )
+
+        return hmac.compare_digest(
+            signature,
+            expected_signature,
+        )
+
+    except Exception:
+        return False
+
+
+def require_auth(
+    request: Request,
+):
+    token = request.cookies.get(
+        AUTH_COOKIE_NAME
+    )
+
+    if not _session_is_valid(
+        token
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Authentication required."
+            ),
+        )
+
+    return True
+
+
+@app.post(
+    "/api/auth/login"
+)
+def doclens_login(
+    payload: DocLensLoginRequest,
+    response: Response,
+):
+    (
+        expected_email,
+        password_hash,
+        session_secret,
+    ) = _get_auth_config()
+
+    supplied_email = (
+        payload.email
+        .strip()
+        .lower()
+    )
+
+    valid_email = (
+        hmac.compare_digest(
+            supplied_email,
+            expected_email,
+        )
+    )
+
+    valid_password = (
+        _verify_password(
+            payload.password,
+            password_hash,
+        )
+    )
+
+    if not (
+        valid_email
+        and
+        valid_password
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Invalid email or password."
+            ),
+        )
+
+    session_token = (
+        _create_session_token(
+            expected_email,
+            session_secret,
+        )
+    )
+
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=session_token,
+        max_age=(
+            AUTH_MAX_AGE_SECONDS
+        ),
+        httponly=True,
+        secure=bool(
+            os.getenv(
+                "VERCEL"
+            )
+        ),
+        samesite="lax",
+        path="/",
+    )
+
+    return {
+        "ok": True,
+    }
+
+
+@app.get(
+    "/api/auth/session"
+)
+def doclens_session(
+    request: Request,
+):
+    token = request.cookies.get(
+        AUTH_COOKIE_NAME
+    )
+
+    return {
+        "authenticated":
+            _session_is_valid(
+                token
+            ),
+    }
+
+
+@app.post(
+    "/api/auth/logout"
+)
+def doclens_logout(
+    response: Response,
+):
+    response.delete_cookie(
+        key=AUTH_COOKIE_NAME,
+        path="/",
+    )
+
+    return {
+        "ok": True,
+    }
 
 
 # ============================================================
@@ -1043,7 +1374,10 @@ def api_health():
 # ============================================================
 
 
-@app.post("/api/invoices/extract")
+@app.post(
+    "/api/invoices/extract",
+    dependencies=[Depends(require_auth)],
+)
 async def extract_invoice(
     file: UploadFile = File(...),
 ):
@@ -1192,7 +1526,10 @@ async def extract_invoice(
 # ============================================================
 
 
-@app.post("/api/documents/generate")
+@app.post(
+    "/api/documents/generate",
+    dependencies=[Depends(require_auth)],
+)
 async def generate_document(
     payload: dict,
 ):

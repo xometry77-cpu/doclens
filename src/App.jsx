@@ -7,10 +7,22 @@
 
 import HomePage from './components/HomePage'
 import ViewerPage from './components/ViewerPage'
+import LoginPage from './components/LoginPage'
 
 const API_BASE_URL = ''
 export default function App() {
   const [page, setPage] = useState('home')
+
+  // DOCLENS_AUTH_GATE_V1
+  const [authState, setAuthState] =
+    useState('checking')
+
+  const [authBusy, setAuthBusy] =
+    useState(false)
+
+  const [authError, setAuthError] =
+    useState('')
+
   const [pdfFile, setPdfFile] = useState(null)
 
   const [analyzed, setAnalyzed] = useState(false)
@@ -437,6 +449,123 @@ export default function App() {
     window.scrollTo(0, 0)
   }, [])
 
+
+  // =========================================================
+  // DOCLENS AUTHENTICATION
+  // =========================================================
+
+  const handleLogin = useCallback(
+    async ({
+      email,
+      password,
+    }) => {
+      setAuthBusy(true)
+      setAuthError('')
+
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/api/auth/login`,
+          {
+            method: 'POST',
+
+            credentials: 'include',
+
+            headers: {
+              'Content-Type':
+                'application/json',
+            },
+
+            body: JSON.stringify({
+              email,
+              password,
+            }),
+          }
+        )
+
+        let result = {}
+
+        try {
+          result = await response.json()
+        } catch {
+          // Keep the fallback error below.
+        }
+
+        if (
+          !response.ok ||
+          !result?.ok
+        ) {
+          throw new Error(
+            result?.detail ||
+              'Invalid email or password.'
+          )
+        }
+
+        setAuthState(
+          'authenticated'
+        )
+
+        setAuthError('')
+      } catch (error) {
+        setAuthState(
+          'anonymous'
+        )
+
+        setAuthError(
+          error?.message ||
+            'Unable to sign in.'
+        )
+      } finally {
+        setAuthBusy(false)
+      }
+    },
+    []
+  )
+
+
+  useEffect(() => {
+    let cancelled = false
+
+    const checkSession =
+      async () => {
+        try {
+          const response =
+            await fetch(
+              `${API_BASE_URL}/api/auth/session`,
+              {
+                method: 'GET',
+                credentials: 'include',
+              }
+            )
+
+          const result =
+            await response.json()
+
+          if (cancelled) {
+            return
+          }
+
+          setAuthState(
+            result?.authenticated
+              ? 'authenticated'
+              : 'anonymous'
+          )
+        } catch {
+          if (!cancelled) {
+            setAuthState(
+              'anonymous'
+            )
+          }
+        }
+      }
+
+    checkSession()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+
   // =========================================================
   // CLEANUP
   // =========================================================
@@ -452,6 +581,94 @@ export default function App() {
       }
     }
   }, [clearTimers])
+
+
+
+  // =========================================================
+  // DOCLENS_LOGOUT_V1
+  // =========================================================
+
+  const handleLogout = useCallback(
+    async () => {
+      setAuthBusy(true)
+      setAuthError('')
+
+      try {
+        await fetch(
+          `${API_BASE_URL}/api/auth/logout`,
+          {
+            method: 'POST',
+            credentials: 'include',
+          }
+        )
+      } catch (error) {
+        console.error(
+          'Logout request error:',
+          error
+        )
+      } finally {
+        clearTimers()
+
+        sessionStorage.removeItem(
+          'exportflow_analysis'
+        )
+
+        setPage('home')
+        setPdfFile(null)
+        setAnalyzed(false)
+        setAnalysisResult(null)
+        setManualEdits({})
+        setProgress(0)
+        setStatus('')
+        setAuthError('')
+        setAuthState('anonymous')
+        setAuthBusy(false)
+
+        window.scrollTo(
+          0,
+          0
+        )
+      }
+    },
+    [
+      clearTimers,
+    ]
+  )
+
+
+  // =========================================================
+  // AUTHENTICATION GATE
+  // Existing HomePage/ViewerPage remain below unchanged.
+  // =========================================================
+
+  if (
+    authState === 'checking'
+  ) {
+    return (
+      <LoginPage
+        checking
+        busy={false}
+        error=""
+        onLogin={handleLogin}
+      />
+    )
+  }
+
+
+  if (
+    authState !==
+    'authenticated'
+  ) {
+    return (
+      <LoginPage
+        checking={false}
+        busy={authBusy}
+        error={authError}
+        onLogin={handleLogin}
+      />
+    )
+  }
+
 
   // =========================================================
   // UI
@@ -470,6 +687,7 @@ export default function App() {
         />
       ) : (
         <ViewerPage
+          onLogout={handleLogout}
           onBack={handleBack}
           onGoBack={handleBack}
           goBack={handleBack}
