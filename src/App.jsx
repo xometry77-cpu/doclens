@@ -641,12 +641,15 @@ export default function App() {
   // Existing HomePage/ViewerPage remain below unchanged.
   // =========================================================
 
+  // DOCLENS_LOGIN_GLITCH_FIX_V1
+  // Keep the normal login UI visually stable while
+  // the session check happens in the background.
   if (
     authState === 'checking'
   ) {
     return (
       <LoginPage
-        checking
+        checking={false}
         busy={false}
         error=""
         onLogin={handleLogin}
