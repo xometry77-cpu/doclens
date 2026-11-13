@@ -10,12 +10,29 @@ import ViewerPage from './components/ViewerPage'
 import LoginPage from './components/LoginPage'
 
 const API_BASE_URL = ''
+
+// DOCLENS_RETURNING_USER_HOME_V1
+// Visual-only browser hint.
+// Real authentication is still verified by /api/auth/session.
+const DOCLENS_SESSION_HINT_KEY =
+  'doclens_authenticated_session'
+
 export default function App() {
   const [page, setPage] = useState('home')
 
   // DOCLENS_AUTH_GATE_V1
   const [authState, setAuthState] =
     useState('checking')
+
+  const [
+    hasSessionHint,
+    setHasSessionHint,
+  ] = useState(
+    () =>
+      window.localStorage.getItem(
+        DOCLENS_SESSION_HINT_KEY
+      ) === '1'
+  )
 
   const [authBusy, setAuthBusy] =
     useState(false)
@@ -500,6 +517,13 @@ export default function App() {
           )
         }
 
+        window.localStorage.setItem(
+          DOCLENS_SESSION_HINT_KEY,
+          '1'
+        )
+
+        setHasSessionHint(true)
+
         setAuthState(
           'authenticated'
         )
@@ -542,6 +566,23 @@ export default function App() {
 
           if (cancelled) {
             return
+          }
+
+          if (
+            result?.authenticated
+          ) {
+            window.localStorage.setItem(
+              DOCLENS_SESSION_HINT_KEY,
+              '1'
+            )
+
+            setHasSessionHint(true)
+          } else {
+            window.localStorage.removeItem(
+              DOCLENS_SESSION_HINT_KEY
+            )
+
+            setHasSessionHint(false)
           }
 
           setAuthState(
@@ -613,6 +654,12 @@ export default function App() {
           'exportflow_analysis'
         )
 
+        window.localStorage.removeItem(
+          DOCLENS_SESSION_HINT_KEY
+        )
+
+        setHasSessionHint(false)
+
         setPage('home')
         setPdfFile(null)
         setAnalyzed(false)
@@ -642,11 +689,32 @@ export default function App() {
   // =========================================================
 
   // DOCLENS_LOGIN_GLITCH_FIX_V1
-  // Keep the normal login UI visually stable while
-  // the session check happens in the background.
+  //
+  // First-time/logged-out user:
+  //   show Login immediately.
+  //
+  // Previously authenticated returning user:
+  //   show the normal Home page immediately while
+  //   /api/auth/session verifies the real cookie.
+  //
+  // The local hint is visual only and never replaces
+  // backend authentication.
   if (
     authState === 'checking'
   ) {
+    if (hasSessionHint) {
+      return (
+        <HomePage
+          pdfFile={pdfFile}
+          progress={progress}
+          status={status}
+          onFileChange={handleFileChange}
+          onAnalyze={handleAnalyze}
+          onGenerate={handleGenerate}
+        />
+      )
+    }
+
     return (
       <LoginPage
         checking={false}
